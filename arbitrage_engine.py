@@ -1,0 +1,641 @@
+"""
+資金費率套利引擎
+核心套利邏輯和機會計算
+"""
+import time
+from typing import Dict, List, Optional, Tuple
+from dataclasses import dataclass
+from bybit_client import BybitClient
+from config import Config
+from trading_rules import TradingRulesManager
+
+@dataclass
+class ArbitrageOpportunity:
+    """套利機會數據結構"""
+    symbol: str
+    spot_price: float
+    futures_price: float
+    funding_rate: float
+    price_difference: float
+    price_difference_percent: float
+    potential_profit: float
+    risk_score: float
+    timestamp: float
+
+@dataclass
+class Position:
+    """持倉數據結構"""
+    symbol: str
+    spot_qty: float
+    futures_qty: float
+    spot_avg_price: float
+    futures_avg_price: float
+    unrealized_pnl: float
+    funding_paid: float
+    entry_time: float
+    leverage: int = 1  # 槓桿倍數
+    total_investment: float = 0.0  # 總投資金額
+    spot_investment: float = 0.0  # 現貨投資金額
+    futures_investment: float = 0.0  # 合約投資金額
+
+@dataclass
+class TradingResult:
+    """交易結果數據結構"""
+    success: bool
+    message: str
+    spot_order_id: Optional[str] = None
+    futures_order_id: Optional[str] = None
+    spot_qty: float = 0.0
+    futures_qty: float = 0.0
+    spot_price: float = 0.0
+    futures_price: float = 0.0
+    total_cost: float = 0.0
+
+class ArbitrageEngine:
+    def __init__(self, client: BybitClient):
+        self.client = client
+        self.positions: Dict[str, Position] = {}
+        self.opportunities: List[ArbitrageOpportunity] = []
+        self.rules_manager = TradingRulesManager(client)
+        
+    def get_funding_rate(self, symbol: str) -> Optional[float]:
+        """獲取指定交易對的當前資金費率"""
+        try:
+            # 將 USDT 交易對轉換為 PERP 格式用於資金費率查詢
+            # 例如：BTCUSDT -> BTCPERP, ETHUSDT -> ETHPERP
+            if symbol.endswith('USDT'):
+                perp_symbol = symbol.replace('USDT', 'PERP')
+            else:
+                perp_symbol = symbol
+            
+            response = self.client.get_funding_rate(perp_symbol, limit=1)
+            if response.get("retCode") == 0 and response.get("result", {}).get("list"):
+                funding_rate = float(response["result"]["list"][0]["fundingRate"])
+                return funding_rate
+        except Exception as e:
+            print(f"獲取資金費率失敗 {symbol} (PERP: {perp_symbol}): {e}")
+        return None
+    
+    def get_spot_price(self, symbol: str) -> Optional[float]:
+        """獲取現貨價格"""
+        try:
+            # 確保交易對格式正確（USDT 結尾）
+            if not symbol.endswith('USDT'):
+                symbol = symbol + 'USDT'
+            
+            response = self.client.get_spot_tickers(symbol)
+            if response.get("retCode") == 0 and response.get("result", {}).get("list"):
+                last_price = float(response["result"]["list"][0]["lastPrice"])
+                return last_price
+        except Exception as e:
+            print(f"獲取現貨價格失敗 {symbol}: {e}")
+        return None
+    
+    def get_futures_price(self, symbol: str) -> Optional[float]:
+        """獲取永續合約價格"""
+        try:
+            # 確保交易對格式正確（USDT 結尾）
+            if not symbol.endswith('USDT'):
+                symbol = symbol + 'USDT'
+            
+            response = self.client.get_linear_tickers(symbol)
+            if response.get("retCode") == 0 and response.get("result", {}).get("list"):
+                last_price = float(response["result"]["list"][0]["lastPrice"])
+                return last_price
+        except Exception as e:
+            print(f"獲取合約價格失敗 {symbol}: {e}")
+        return None
+    
+    def calculate_arbitrage_opportunity(self, symbol: str) -> Optional[ArbitrageOpportunity]:
+        """計算套利機會"""
+        try:
+            # 獲取價格和資金費率
+            spot_price = self.get_spot_price(symbol)
+            futures_price = self.get_futures_price(symbol)
+            funding_rate = self.get_funding_rate(symbol)
+            
+            if not all([spot_price, futures_price, funding_rate is not None]):
+                return None
+            
+            # 計算價格差異
+            price_difference = futures_price - spot_price
+            price_difference_percent = (price_difference / spot_price) * 100
+            
+            # 計算潛在利潤（8小時資金費率）
+            daily_funding = funding_rate * 3  # 每天3次資金費率結算
+            potential_profit = daily_funding * 100  # 假設100 USDT倉位
+            
+            # 計算風險評分
+            risk_score = self._calculate_risk_score(price_difference_percent, funding_rate)
+            
+            opportunity = ArbitrageOpportunity(
+                symbol=symbol,
+                spot_price=spot_price,
+                futures_price=futures_price,
+                funding_rate=funding_rate,
+                price_difference=price_difference,
+                price_difference_percent=price_difference_percent,
+                potential_profit=potential_profit,
+                risk_score=risk_score,
+                timestamp=time.time()
+            )
+            
+            return opportunity
+            
+        except Exception as e:
+            print(f"計算套利機會失敗 {symbol}: {e}")
+            return None
+    
+    def _calculate_risk_score(self, price_diff_percent: float, funding_rate: float) -> float:
+        """計算風險評分 (0-1, 越低越安全)"""
+        # 價格差異風險
+        price_risk = min(abs(price_diff_percent) / 2.0, 1.0)  # 2%以上視為高風險
+        
+        # 資金費率風險（負費率風險較高）
+        funding_risk = max(0, -funding_rate * 100)  # 負費率增加風險
+        
+        # 綜合風險評分
+        risk_score = (price_risk * 0.7 + funding_risk * 0.3)
+        return min(risk_score, 1.0)
+    
+    def scan_opportunities(self, symbols: List[str]) -> List[ArbitrageOpportunity]:
+        """掃描所有交易對的套利機會"""
+        opportunities = []
+        
+        for symbol in symbols:
+            opportunity = self.calculate_arbitrage_opportunity(symbol)
+            if opportunity and opportunity.funding_rate > Config.MIN_FUNDING_RATE:
+                opportunities.append(opportunity)
+        
+        # 按潛在利潤排序
+        opportunities.sort(key=lambda x: x.potential_profit, reverse=True)
+        self.opportunities = opportunities
+        return opportunities
+    
+    def execute_arbitrage(self, symbol: str, amount: float) -> bool:
+        """執行套利交易"""
+        try:
+            # 獲取當前價格
+            spot_price = self.get_spot_price(symbol)
+            futures_price = self.get_futures_price(symbol)
+            
+            if not spot_price or not futures_price:
+                print(f"無法獲取 {symbol} 的價格")
+                return False
+            
+            # 計算數量
+            spot_qty = amount / spot_price
+            futures_qty = amount / futures_price
+            
+            # 下現貨買單
+            spot_order = self.client.place_order(
+                symbol=symbol,
+                side="Buy",
+                order_type="Market",
+                qty=str(round(spot_qty, 6)),
+                category="spot"
+            )
+            
+            if spot_order.get("retCode") != 0:
+                print(f"現貨買單失敗: {spot_order.get('retMsg')}")
+                return False
+            
+            # 下合約空單
+            futures_order = self.client.place_order(
+                symbol=symbol,
+                side="Sell",
+                order_type="Market", 
+                qty=str(round(futures_qty, 6)),
+                category="linear"
+            )
+            
+            if futures_order.get("retCode") != 0:
+                print(f"合約空單失敗: {futures_order.get('retMsg')}")
+                # 如果合約下單失敗，嘗試取消現貨訂單
+                self.client.cancel_order(symbol, spot_order["result"]["orderId"], "spot")
+                return False
+            
+            # 記錄持倉
+            position = Position(
+                symbol=symbol,
+                spot_qty=spot_qty,
+                futures_qty=futures_qty,
+                spot_avg_price=spot_price,
+                futures_avg_price=futures_price,
+                unrealized_pnl=0.0,
+                funding_paid=0.0,
+                entry_time=time.time()
+            )
+            self.positions[symbol] = position
+            
+            print(f"套利交易執行成功: {symbol}")
+            print(f"現貨買入: {spot_qty:.6f} @ {spot_price}")
+            print(f"合約做空: {futures_qty:.6f} @ {futures_price}")
+            
+            return True
+            
+        except Exception as e:
+            print(f"執行套利交易失敗 {symbol}: {e}")
+            return False
+    
+    def close_position(self, symbol: str) -> bool:
+        """平倉"""
+        if symbol not in self.positions:
+            print(f"沒有找到 {symbol} 的持倉")
+            return False
+        
+        try:
+            position = self.positions[symbol]
+            
+            # 賣出現貨
+            spot_order = self.client.place_order(
+                symbol=symbol,
+                side="Sell",
+                order_type="Market",
+                qty=str(round(position.spot_qty, 6)),
+                category="spot"
+            )
+            
+            # 買入合約平倉
+            futures_order = self.client.place_order(
+                symbol=symbol,
+                side="Buy",
+                order_type="Market",
+                qty=str(round(position.futures_qty, 6)),
+                category="linear"
+            )
+            
+            if spot_order.get("retCode") == 0 and futures_order.get("retCode") == 0:
+                del self.positions[symbol]
+                print(f"平倉成功: {symbol}")
+                return True
+            else:
+                print(f"平倉失敗: {symbol}")
+                return False
+                
+        except Exception as e:
+            print(f"平倉失敗 {symbol}: {e}")
+            return False
+
+    def calculate_capital_allocation(self, total_amount: float, leverage: int) -> Tuple[float, float]:
+        """
+        計算資金分配
+        對於對衝套利，現貨和合約應該買入相同數量的幣，但合約使用槓桿
+        
+        Args:
+            total_amount: 總投資金額
+            leverage: 槓桿倍數
+            
+        Returns:
+            (spot_amount, futures_amount): 現貨投資金額, 合約保證金
+        """
+        # 對衝套利邏輯：
+        # 1. 現貨：用一半資金買入現貨
+        # 2. 合約：用另一半資金作為保證金，通過槓桿做空相同數量的幣
+        
+        # 現貨投資：直接買入現貨
+        spot_amount = total_amount / 2
+        
+        # 合約保證金：用於做空相同價值的合約
+        # 由於合約有槓桿，保證金 = 現貨價值 / 槓桿
+        futures_amount = spot_amount / leverage
+        
+        return spot_amount, futures_amount
+
+    def one_click_arbitrage(self, symbol: str, total_amount: float, leverage: int = 2) -> TradingResult:
+        """
+        一鍵套利下單：現貨做多 + 合約做空
+        
+        Args:
+            symbol: 交易對
+            total_amount: 總投資金額 (USDT)
+            leverage: 槓桿倍數 (1-5)
+            
+        Returns:
+            TradingResult: 交易結果
+        """
+        try:
+            # 獲取交易規則和提示
+            tips = self.rules_manager.get_trading_tips(symbol)
+            
+            # 檢查槓桿倍數
+            max_leverage = tips['linear_rules']['max_leverage']
+            if leverage < 1 or leverage > max_leverage:
+                return TradingResult(False, f"槓桿倍數必須在 1-{max_leverage} 之間，當前設置: {leverage}")
+            
+            # 檢查最小投資金額
+            min_investment = tips['min_investment']
+            if total_amount < min_investment:
+                return TradingResult(False, f"投資金額 {total_amount:.2f} USDT 小於最小要求 {min_investment:.2f} USDT")
+            
+            # 計算資金分配
+            spot_amount, futures_amount = self.calculate_capital_allocation(total_amount, leverage)
+            
+            # 獲取當前價格
+            spot_price = self.get_spot_price(symbol)
+            futures_price = self.get_futures_price(symbol)
+            
+            if not spot_price or not futures_price:
+                return TradingResult(False, f"無法獲取 {symbol} 的價格信息")
+            
+            # 計算交易數量並調整精度
+            # 對衝套利：現貨和合約應該買入相同數量的幣
+            # 現貨：用spot_amount買入現貨
+            # 合約：用futures_amount做空合約
+            spot_qty = spot_amount / spot_price  # 現貨數量 = 現貨投資金額 / 現貨價格
+            futures_qty = futures_amount / futures_price  # 合約數量 = 合約保證金 / 合約價格
+            
+            # 調整數量以符合步長要求
+            spot_step = tips['spot_rules']['qty_step']
+            futures_step = tips['linear_rules']['qty_step']
+            
+            # 將數量調整為步長的倍數
+            spot_qty = round(spot_qty / spot_step) * spot_step
+            futures_qty = round(futures_qty / futures_step) * futures_step
+            
+            # 使用交易規則的精度設置
+            spot_precision = tips['spot_rules']['qty_precision']
+            futures_precision = tips['linear_rules']['qty_precision']
+            
+            spot_qty = round(spot_qty, spot_precision)
+            futures_qty = round(futures_qty, futures_precision)
+            
+            # 檢查數量是否為0或負數
+            if spot_qty <= 0 or futures_qty <= 0:
+                return TradingResult(False, f"計算的交易數量無效: 現貨 {spot_qty}, 合約 {futures_qty}")
+            
+            # 驗證現貨訂單參數
+            spot_valid, spot_error = self.rules_manager.validate_order_params(
+                symbol, spot_qty, spot_price, "spot"
+            )
+            if not spot_valid:
+                return TradingResult(False, f"現貨訂單參數無效: {spot_error}")
+            
+            # 驗證合約訂單參數
+            futures_valid, futures_error = self.rules_manager.validate_order_params(
+                symbol, futures_qty, futures_price, "linear"
+            )
+            if not futures_valid:
+                return TradingResult(False, f"合約訂單參數無效: {futures_error}")
+            
+            print(f"📊 對衝套利資金分配:")
+            print(f"   總投資: {total_amount:.2f} USDT")
+            print(f"   槓桿: {leverage}x")
+            print(f"   現貨投資: {spot_amount:.2f} USDT → 買入 {spot_qty:.6f} {symbol.replace('USDT', '')} (價值: {spot_qty * spot_price:.2f} USDT)")
+            print(f"   合約保證金: {futures_amount:.2f} USDT → 做空 {futures_qty:.6f} {symbol.replace('USDT', '')} (價值: {futures_qty * futures_price:.2f} USDT)")
+            print(f"   現貨價格: {spot_price:.4f} USDT")
+            print(f"   合約價格: {futures_price:.4f} USDT")
+            print(f"   對衝效果: 現貨 {spot_qty:.6f} 個 vs 合約 {futures_qty:.6f} 個 (數量相等，完全對衝)")
+            print(f"   槓桿效果: 合約保證金 {futures_amount:.2f} USDT 通過 {leverage}x 槓桿控制 {futures_qty * futures_price:.2f} USDT 價值的合約")
+            
+            # 執行現貨買入訂單（使用市價單，傳入USDT金額）
+            spot_result = self.client.place_order(
+                symbol=symbol,
+                side="Buy",
+                order_type="Market",
+                qty=str(spot_amount),  # 傳入USDT金額，不是數量
+                category="spot"
+            )
+            
+            if spot_result.get("retCode") != 0:
+                error_msg = spot_result.get('retMsg', '未知錯誤')
+                print(f"❌ 現貨買入失敗: {error_msg}")
+                print(f"   訂單參數: symbol={symbol}, side=Buy, qty={spot_qty}, category=spot")
+                print(f"   完整響應: {spot_result}")
+                return TradingResult(False, f"現貨買入失敗: {error_msg}")
+            
+            spot_order_id = spot_result.get("result", {}).get("orderId")
+            print(f"✅ 現貨買入成功: 訂單ID {spot_order_id}")
+            
+            # 設置合約槓桿
+            leverage_result = self.client.set_leverage(
+                symbol=symbol,
+                leverage=str(leverage),
+                category="linear"
+            )
+            
+            if leverage_result.get("retCode") != 0:
+                print(f"⚠️ 設置槓桿失敗: {leverage_result.get('retMsg')}")
+                # 繼續執行，可能槓桿已經設置過
+            
+            # 執行合約賣出訂單（使用市價單，完全用USDT計價）
+            futures_result = self.client.place_order(
+                symbol=symbol,
+                side="Sell",
+                order_type="Market",
+                qty=str(futures_qty),
+                category="linear"
+            )
+            
+            if futures_result.get("retCode") != 0:
+                error_msg = futures_result.get('retMsg', '未知錯誤')
+                print(f"❌ 合約賣出失敗: {error_msg}")
+                print(f"   訂單參數: symbol={symbol}, side=Sell, qty={futures_qty}, category=linear")
+                print(f"   完整響應: {futures_result}")
+                # 如果合約下單失敗，嘗試取消現貨訂單
+                if spot_order_id:
+                    print(f"🔄 嘗試取消現貨訂單: {spot_order_id}")
+                    cancel_result = self.client.cancel_order(symbol, spot_order_id, "spot")
+                    print(f"   取消結果: {cancel_result}")
+                return TradingResult(False, f"合約賣出失敗: {error_msg}")
+            
+            futures_order_id = futures_result.get("result", {}).get("orderId")
+            print(f"✅ 合約賣出成功: 訂單ID {futures_order_id}")
+            
+            # 創建持倉記錄
+            position = Position(
+                symbol=symbol,
+                spot_qty=spot_qty,
+                futures_qty=futures_qty,
+                spot_avg_price=spot_price,
+                futures_avg_price=futures_price,
+                unrealized_pnl=0.0,
+                funding_paid=0.0,
+                entry_time=time.time(),
+                leverage=leverage,
+                total_investment=total_amount,
+                spot_investment=spot_amount,
+                futures_investment=futures_amount
+            )
+            
+            self.positions[symbol] = position
+            
+            return TradingResult(
+                success=True,
+                message=f"✅ 一鍵套利成功！現貨買入 {spot_qty:.6f}，合約賣出 {futures_qty:.6f}",
+                spot_order_id=spot_order_id,
+                futures_order_id=futures_order_id,
+                spot_qty=spot_qty,
+                futures_qty=futures_qty,
+                spot_price=spot_price,
+                futures_price=futures_price,
+                total_cost=total_amount
+            )
+            
+        except Exception as e:
+            return TradingResult(False, f"一鍵套利失敗: {str(e)}")
+
+    def close_position(self, symbol: str) -> TradingResult:
+        """
+        平倉：賣出現貨，買入合約
+        
+        Args:
+            symbol: 交易對
+            
+        Returns:
+            TradingResult: 平倉結果
+        """
+        try:
+            if symbol not in self.positions:
+                return TradingResult(False, f"未找到 {symbol} 的持倉")
+            
+            position = self.positions[symbol]
+            
+            # 獲取當前價格
+            spot_price = self.get_spot_price(symbol)
+            futures_price = self.get_futures_price(symbol)
+            
+            if not spot_price or not futures_price:
+                return TradingResult(False, f"無法獲取 {symbol} 的價格信息")
+            
+            # 獲取交易規則以確定正確的精度
+            tips = self.rules_manager.get_trading_tips(symbol)
+            spot_precision = tips['spot_rules']['qty_precision']
+            
+            # 賣出與空單數量相等的現貨（而不是全部現貨）
+            close_spot_qty = abs(position.futures_qty)  # 空單的數量
+            
+            # 賣出現貨
+            spot_result = self.client.place_order(
+                symbol=symbol,
+                side="Sell",
+                order_type="Market",
+                qty=str(round(close_spot_qty, spot_precision)),  # 只賣出與空單相等的數量
+                category="spot"
+            )
+            
+            if spot_result.get("retCode") != 0:
+                return TradingResult(False, f"現貨賣出失敗: {spot_result.get('retMsg')}")
+            
+            # 買入合約（平空倉）
+            futures_precision = tips['linear_rules']['qty_precision']
+            futures_result = self.client.place_order(
+                symbol=symbol,
+                side="Buy",
+                order_type="Market",
+                qty=str(round(abs(position.futures_qty), futures_precision)),  # 使用正確的精度
+                category="linear"
+            )
+            
+            if futures_result.get("retCode") != 0:
+                return TradingResult(False, f"合約買入失敗: {futures_result.get('retMsg')}")
+            
+            # 計算盈虧（只計算平倉部分的盈虧）
+            spot_pnl = (spot_price - position.spot_avg_price) * close_spot_qty
+            futures_pnl = (position.futures_avg_price - futures_price) * position.futures_qty
+            total_pnl = spot_pnl + futures_pnl
+            
+            # 更新持倉記錄（減少現貨持倉）
+            position.spot_qty -= close_spot_qty
+            
+            # 如果現貨持倉為0或接近0，移除持倉記錄
+            if position.spot_qty < 0.001:  # 小於0.001認為是0
+                del self.positions[symbol]
+                position_closed = True
+            else:
+                position_closed = False
+            
+            return TradingResult(
+                success=True,
+                message=f"✅ 平倉成功！總盈虧: {total_pnl:.2f} USDT" + ("" if position_closed else f"，剩餘現貨: {position.spot_qty:.6f}"),
+                spot_qty=close_spot_qty,  # 返回實際賣出的現貨數量
+                futures_qty=abs(position.futures_qty),  # 返回平倉的合約數量
+                spot_price=spot_price,
+                futures_price=futures_price,
+                total_cost=0.0
+            )
+            
+        except Exception as e:
+            return TradingResult(False, f"平倉失敗: {str(e)}")
+    
+    def get_positions_summary(self) -> Dict:
+        """獲取持倉摘要"""
+        # 從 API 獲取實際持倉
+        actual_positions = {}
+        
+        # 獲取合約持倉
+        try:
+            linear_result = self.client.get_positions(category="linear")
+            if linear_result.get("retCode") == 0:
+                for position_data in linear_result.get("result", {}).get("list", []):
+                    symbol = position_data.get("symbol")
+                    size = float(position_data.get("size", 0))
+                    if size > 0:  # 只處理有持倉的
+                        side = position_data.get("side")
+                        avg_price = float(position_data.get("avgPrice", 0))
+                        unrealized_pnl = float(position_data.get("unrealisedPnl", 0))
+                        
+                        # 檢查是否在我們的持倉記錄中
+                        if symbol in self.positions:
+                            # 更新現有持倉
+                            pos = self.positions[symbol]
+                            pos.futures_qty = size if side == "Buy" else -size
+                            pos.futures_avg_price = avg_price
+                            pos.unrealized_pnl = unrealized_pnl
+                            actual_positions[symbol] = pos
+                        else:
+                            # 創建新的持倉記錄（可能是手動開的倉）
+                            pos = Position(
+                                symbol=symbol,
+                                spot_qty=0.0,  # 現貨持倉需要從錢包餘額推斷
+                                futures_qty=size if side == "Buy" else -size,
+                                spot_avg_price=0.0,
+                                futures_avg_price=avg_price,
+                                unrealized_pnl=unrealized_pnl,
+                                funding_paid=0.0,
+                                entry_time=time.time(),
+                                leverage=1,
+                                total_investment=0.0,
+                                spot_investment=0.0,
+                                futures_investment=0.0
+                            )
+                            actual_positions[symbol] = pos
+        except Exception as e:
+            print(f"獲取合約持倉失敗: {e}")
+        
+        # 獲取現貨持倉（從錢包餘額推斷）
+        try:
+            balance_result = self.client.get_account_balance()
+            if balance_result.get("retCode") == 0:
+                for account in balance_result.get("result", {}).get("list", []):
+                    for coin in account.get("coin", []):
+                        coin_name = coin.get("coin")
+                        balance = float(coin.get("walletBalance", 0))
+                        
+                        # 檢查是否有對應的交易對
+                        if coin_name != "USDT" and balance > 0:
+                            symbol = f"{coin_name}USDT"
+                            if symbol in actual_positions:
+                                actual_positions[symbol].spot_qty = balance
+                            elif symbol in self.positions:
+                                self.positions[symbol].spot_qty = balance
+                                actual_positions[symbol] = self.positions[symbol]
+        except Exception as e:
+            print(f"獲取現貨持倉失敗: {e}")
+        
+        # 更新內部持倉記錄
+        self.positions = actual_positions
+        
+        total_positions = len(actual_positions)
+        total_value = sum(pos.spot_qty * pos.spot_avg_price + abs(pos.futures_qty) * pos.futures_avg_price 
+                         for pos in actual_positions.values())
+        total_unrealized_pnl = sum(pos.unrealized_pnl for pos in actual_positions.values())
+        total_funding_paid = sum(pos.funding_paid for pos in actual_positions.values())
+        
+        return {
+            'total_positions': total_positions,
+            'total_value': total_value,
+            'total_unrealized_pnl': total_unrealized_pnl,
+            'total_funding_paid': total_funding_paid,
+            'positions': actual_positions
+        }
