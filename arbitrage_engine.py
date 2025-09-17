@@ -81,7 +81,7 @@ class ArbitrageEngine:
         self.rules_manager = TradingRulesManager(client)
         
     def get_funding_rate(self, symbol: str) -> Optional[float]:
-        """獲取指定交易對的當前資金費率"""
+        """獲取指定交易對的當前實時資金費率"""
         try:
             # 將 USDT 交易對轉換為 PERP 格式用於資金費率查詢
             # 例如：BTCUSDT -> BTCPERP, ETHUSDT -> ETHPERP
@@ -90,12 +90,26 @@ class ArbitrageEngine:
             else:
                 perp_symbol = symbol
             
-            response = self.client.get_funding_rate(perp_symbol, limit=1)
+            # 使用 Tickers API 獲取實時資金費率
+            response = self.client.get_tickers("linear", perp_symbol)
             if response.get("retCode") == 0 and response.get("result", {}).get("list"):
-                funding_rate = float(response["result"]["list"][0]["fundingRate"])
-                return funding_rate
+                ticker_data = response["result"]["list"][0]
+                if "fundingRate" in ticker_data:
+                    funding_rate = float(ticker_data["fundingRate"])
+                    next_funding_time = int(ticker_data.get("nextFundingTime", 0))
+                    
+                    # 計算距離下次結算的時間
+                    import time
+                    current_time = int(time.time() * 1000)
+                    time_to_next = (next_funding_time - current_time) / (1000 * 3600)  # 轉換為小時
+                    
+                    print(f"📊 實時資金費率 {symbol}:")
+                    print(f"   當前費率: {funding_rate:.6f} ({funding_rate*100:.4f}%)")
+                    print(f"   下次結算: {time_to_next:.2f} 小時後")
+                    
+                    return funding_rate
         except Exception as e:
-            print(f"獲取資金費率失敗 {symbol} (PERP: {perp_symbol}): {e}")
+            print(f"獲取實時資金費率失敗 {symbol} (PERP: {perp_symbol}): {e}")
         return None
     
     def get_spot_price(self, symbol: str) -> Optional[float]:
