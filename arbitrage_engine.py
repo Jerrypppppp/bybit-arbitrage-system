@@ -427,6 +427,19 @@ class ArbitrageEngine:
             futures_order_id = futures_result.get("result", {}).get("orderId")
             print(f"✅ 合約賣出成功: 訂單ID {futures_order_id}")
             
+            # 計算開倉手續費（根據Bybit實際費率）
+            SPOT_FEE_RATE = 0.001  # 0.1% (現貨Taker/Maker)
+            FUTURES_FEE_RATE = 0.00055  # 0.055% (衍生品Taker，市價單)
+            
+            spot_fees = spot_amount * SPOT_FEE_RATE
+            futures_fees = (futures_qty * futures_price) * FUTURES_FEE_RATE
+            total_entry_fees = spot_fees + futures_fees
+            
+            print(f"💰 開倉手續費計算:")
+            print(f"   現貨手續費: {spot_amount:.2f} × {SPOT_FEE_RATE:.3f} = {spot_fees:.2f} USDT")
+            print(f"   合約手續費: {futures_qty:.6f} × {futures_price:.4f} × {FUTURES_FEE_RATE:.3f} = {futures_fees:.2f} USDT")
+            print(f"   總開倉手續費: {total_entry_fees:.2f} USDT")
+            
             # 創建持倉記錄
             position = Position(
                 symbol=symbol,
@@ -529,20 +542,43 @@ class ArbitrageEngine:
             if futures_result.get("retCode") != 0:
                 return TradingResult(False, f"合約買入失敗: {futures_result.get('retMsg')}")
             
-            # 計算盈虧（對衝套利）
-            # 現貨：買入現貨，賣出現貨 → 盈虧 = (賣出價格 - 買入價格) × 數量
-            spot_pnl = (spot_price - position.spot_avg_price) * close_spot_qty
+            # 計算盈虧（對衝套利，包含手續費）
+            # Bybit手續費率：現貨0.1%，衍生品市價單0.055%
+            SPOT_FEE_RATE = 0.001  # 0.1% (現貨Taker/Maker)
+            FUTURES_FEE_RATE = 0.00055  # 0.055% (衍生品Taker，市價單)
             
-            # 合約：做空合約，買入平倉 → 盈虧 = (做空價格 - 平倉價格) × 數量
-            # 注意：futures_qty 是負數（空頭），所以用 abs() 取絕對值
-            futures_pnl = (position.futures_avg_price - futures_price) * abs(position.futures_qty)
+            # 現貨：買入現貨，賣出現貨 → 盈虧 = (賣出價格 - 買入價格) × 數量 - 手續費
+            spot_gross_pnl = (spot_price - position.spot_avg_price) * close_spot_qty
+            
+            # 現貨手續費：開倉時買入手續費 + 平倉時賣出手續費
+            spot_buy_amount = position.spot_avg_price * close_spot_qty  # 開倉時買入金額
+            spot_sell_amount = spot_price * close_spot_qty  # 平倉時賣出金額
+            spot_fees = (spot_buy_amount + spot_sell_amount) * SPOT_FEE_RATE
+            
+            spot_pnl = spot_gross_pnl - spot_fees
+            
+            # 合約：做空合約，買入平倉 → 盈虧 = (做空價格 - 平倉價格) × 數量 - 手續費
+            futures_gross_pnl = (position.futures_avg_price - futures_price) * abs(position.futures_qty)
+            
+            # 合約手續費：開倉時做空手續費 + 平倉時買入手續費
+            futures_short_amount = position.futures_avg_price * abs(position.futures_qty)  # 開倉時做空金額
+            futures_buy_amount = futures_price * abs(position.futures_qty)  # 平倉時買入金額
+            futures_fees = (futures_short_amount + futures_buy_amount) * FUTURES_FEE_RATE
+            
+            futures_pnl = futures_gross_pnl - futures_fees
             
             total_pnl = spot_pnl + futures_pnl
+            total_fees = spot_fees + futures_fees
             
-            print(f"📊 盈虧計算詳情:")
-            print(f"   現貨盈虧: ({spot_price:.4f} - {position.spot_avg_price:.4f}) × {close_spot_qty:.6f} = {spot_pnl:.2f} USDT")
-            print(f"   合約盈虧: ({position.futures_avg_price:.4f} - {futures_price:.4f}) × {abs(position.futures_qty):.6f} = {futures_pnl:.2f} USDT")
-            print(f"   總盈虧: {total_pnl:.2f} USDT")
+            print(f"📊 盈虧計算詳情（含手續費）:")
+            print(f"   現貨毛利: ({spot_price:.4f} - {position.spot_avg_price:.4f}) × {close_spot_qty:.6f} = {spot_gross_pnl:.2f} USDT")
+            print(f"   現貨手續費: ({spot_buy_amount:.2f} + {spot_sell_amount:.2f}) × {SPOT_FEE_RATE:.3f} = {spot_fees:.2f} USDT")
+            print(f"   現貨淨利: {spot_pnl:.2f} USDT")
+            print(f"   合約毛利: ({position.futures_avg_price:.4f} - {futures_price:.4f}) × {abs(position.futures_qty):.6f} = {futures_gross_pnl:.2f} USDT")
+            print(f"   合約手續費: ({futures_short_amount:.2f} + {futures_buy_amount:.2f}) × {FUTURES_FEE_RATE:.3f} = {futures_fees:.2f} USDT")
+            print(f"   合約淨利: {futures_pnl:.2f} USDT")
+            print(f"   總手續費: {total_fees:.2f} USDT")
+            print(f"   總淨利: {total_pnl:.2f} USDT")
             
             # 更新持倉記錄
             position.spot_qty -= close_spot_qty
