@@ -478,13 +478,12 @@ class ArbitrageEngine:
             print(f"   現貨持倉: {position.spot_qty:.6f}")
             print(f"   賣出現貨: {close_spot_qty:.6f}")
             
-            # 賣出現貨（使用quoteQty參數，傳入USDT金額）
-            spot_value = close_spot_qty * spot_price  # 計算現貨價值
+            # 賣出現貨（使用qty參數，傳入數量）
             spot_result = self.client.place_order(
                 symbol=symbol,
                 side="Sell",
                 order_type="Market",
-                qty=str(round(spot_value, 2)),  # 傳入USDT金額
+                qty=str(round(close_spot_qty, spot_precision)),  # 傳入數量
                 category="spot"
             )
             
@@ -517,8 +516,13 @@ class ArbitrageEngine:
             position.spot_qty -= close_spot_qty
             position.futures_qty = 0  # 合約完全平倉
             
-            # 如果現貨持倉為0或接近0，移除持倉記錄
-            if position.spot_qty < 0.001:
+            # 如果合約已完全平倉，且現貨持倉接近0，則移除整個持倉記錄
+            # 這樣可以避免在持倉畫面中顯示只有現貨的"假"持倉
+            if position.futures_qty == 0 and position.spot_qty < 0.001:
+                del self.positions[symbol]
+                position_closed = True
+            elif position.futures_qty == 0:
+                # 合約已平倉但還有現貨，也移除記錄（避免誤導）
                 del self.positions[symbol]
                 position_closed = True
             else:
@@ -526,7 +530,7 @@ class ArbitrageEngine:
             
             return TradingResult(
                 success=True,
-                message=f"✅ 平倉成功！總盈虧: {total_pnl:.2f} USDT" + ("" if position_closed else f"，剩餘現貨: {position.spot_qty:.6f}"),
+                message=f"✅ 平倉成功！總盈虧: {total_pnl:.2f} USDT" + ("，持倉已完全關閉" if position_closed else f"，剩餘現貨: {position.spot_qty:.6f}"),
                 spot_qty=close_spot_qty,  # 返回實際賣出的現貨數量
                 futures_qty=close_futures_qty,  # 返回平倉的合約數量
                 spot_price=spot_price,
