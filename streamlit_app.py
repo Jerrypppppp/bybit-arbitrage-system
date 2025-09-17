@@ -702,6 +702,9 @@ def show_positions_tab():
             st.divider()
             if st.button("🗑️ 平倉所有持倉", type="secondary"):
                 close_all_positions()
+        
+        # 顯示歷史記錄
+        show_closed_positions()
 
 def close_position(symbol):
     """平倉單個持倉"""
@@ -753,6 +756,60 @@ def close_all_positions():
                 st.warning(f"⚠️ 部分持倉平倉失敗 ({success_count}/{total_count})")
     except Exception as e:
         st.error(f"❌ 平倉時發生錯誤: {str(e)}")
+
+def show_closed_positions():
+    """顯示已平倉的歷史記錄"""
+    if not st.session_state.engine:
+        return
+    
+    # 獲取歷史記錄摘要
+    closed_summary = st.session_state.engine.get_closed_positions_summary()
+    
+    if closed_summary['total_closed'] > 0:
+        st.divider()
+        st.subheader("📚 歷史記錄")
+        
+        # 顯示歷史記錄摘要
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.metric("已平倉數", closed_summary['total_closed'])
+        
+        with col2:
+            st.metric("總盈虧 (USDT)", f"{closed_summary['total_pnl']:.2f}")
+        
+        with col3:
+            st.metric("總投資 (USDT)", f"{closed_summary['total_investment']:.2f}")
+        
+        # 顯示詳細歷史記錄
+        st.subheader("📋 平倉詳情")
+        
+        for i, position in enumerate(reversed(closed_summary['positions'])):  # 最新的在前
+            with st.expander(f"📊 {position.symbol} - {datetime.fromtimestamp(position.close_time).strftime('%Y-%m-%d %H:%M:%S')}"):
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.write(f"**原始持倉:**")
+                    st.write(f"  現貨: {position.spot_qty:.6f} @ ${position.spot_avg_price:.4f}")
+                    st.write(f"  合約: {position.futures_qty:.6f} @ ${position.futures_avg_price:.4f}")
+                    st.write(f"**平倉數量:**")
+                    st.write(f"  現貨賣出: {position.close_spot_qty:.6f} @ ${position.close_spot_price:.4f}")
+                    st.write(f"  合約買入: {position.close_futures_qty:.6f} @ ${position.close_futures_price:.4f}")
+                
+                with col2:
+                    st.write(f"**投資信息:**")
+                    st.write(f"  總投資: {position.total_investment:.2f} USDT")
+                    st.write(f"  現貨投資: {position.spot_investment:.2f} USDT")
+                    st.write(f"  合約投資: {position.futures_investment:.2f} USDT")
+                    st.write(f"  槓桿倍數: {position.leverage}x")
+                    st.write(f"**時間信息:**")
+                    st.write(f"  開倉時間: {datetime.fromtimestamp(position.entry_time).strftime('%Y-%m-%d %H:%M:%S')}")
+                    st.write(f"  平倉時間: {datetime.fromtimestamp(position.close_time).strftime('%Y-%m-%d %H:%M:%S')}")
+                    st.write(f"**盈虧:**")
+                    pnl_color = "green" if position.total_pnl >= 0 else "red"
+                    st.markdown(f"<span style='color: {pnl_color}; font-weight: bold;'>總盈虧: {position.total_pnl:.2f} USDT</span>", unsafe_allow_html=True)
+    else:
+        st.info("📭 暫無歷史記錄")
 
 def show_risk_tab():
     """顯示風險監控選項卡"""

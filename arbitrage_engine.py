@@ -51,11 +51,33 @@ class TradingResult:
     futures_price: float = 0.0
     total_cost: float = 0.0
 
+@dataclass
+class ClosedPosition:
+    """已平倉持倉歷史記錄"""
+    symbol: str
+    spot_qty: float
+    futures_qty: float
+    spot_avg_price: float
+    futures_avg_price: float
+    close_spot_qty: float
+    close_futures_qty: float
+    close_spot_price: float
+    close_futures_price: float
+    total_pnl: float
+    entry_time: float
+    close_time: float
+    leverage: int
+    total_investment: float
+    spot_investment: float
+    futures_investment: float
+    funding_paid: float
+
 class ArbitrageEngine:
     def __init__(self, client: BybitClient):
         self.client = client
         self.positions: Dict[str, Position] = {}
         self.opportunities: List[ArbitrageOpportunity] = []
+        self.closed_positions: List[ClosedPosition] = []  # 歷史記錄
         self.rules_manager = TradingRulesManager(client)
         
     def get_funding_rate(self, symbol: str) -> Optional[float]:
@@ -516,6 +538,30 @@ class ArbitrageEngine:
             position.spot_qty -= close_spot_qty
             position.futures_qty = 0  # 合約完全平倉
             
+            # 創建歷史記錄
+            closed_position = ClosedPosition(
+                symbol=symbol,
+                spot_qty=position.spot_qty + close_spot_qty,  # 原始現貨持倉
+                futures_qty=position.futures_qty,  # 原始合約持倉
+                spot_avg_price=position.spot_avg_price,
+                futures_avg_price=position.futures_avg_price,
+                close_spot_qty=close_spot_qty,
+                close_futures_qty=close_futures_qty,
+                close_spot_price=spot_price,
+                close_futures_price=futures_price,
+                total_pnl=total_pnl,
+                entry_time=position.entry_time,
+                close_time=time.time(),
+                leverage=position.leverage,
+                total_investment=position.total_investment,
+                spot_investment=position.spot_investment,
+                futures_investment=position.futures_investment,
+                funding_paid=position.funding_paid
+            )
+            
+            # 添加到歷史記錄
+            self.closed_positions.append(closed_position)
+            
             # 如果合約已完全平倉，且現貨持倉接近0，則移除整個持倉記錄
             # 這樣可以避免在持倉畫面中顯示只有現貨的"假"持倉
             if position.futures_qty == 0 and position.spot_qty < 0.001:
@@ -621,4 +667,28 @@ class ArbitrageEngine:
             'total_unrealized_pnl': total_unrealized_pnl,
             'total_funding_paid': total_funding_paid,
             'positions': actual_positions
+        }
+    
+    def get_closed_positions(self) -> List[ClosedPosition]:
+        """獲取已平倉的歷史記錄"""
+        return self.closed_positions
+    
+    def get_closed_positions_summary(self) -> Dict:
+        """獲取已平倉持倉摘要"""
+        if not self.closed_positions:
+            return {
+                'total_closed': 0,
+                'total_pnl': 0.0,
+                'total_investment': 0.0,
+                'positions': []
+            }
+        
+        total_pnl = sum(pos.total_pnl for pos in self.closed_positions)
+        total_investment = sum(pos.total_investment for pos in self.closed_positions)
+        
+        return {
+            'total_closed': len(self.closed_positions),
+            'total_pnl': total_pnl,
+            'total_investment': total_investment,
+            'positions': self.closed_positions
         }
