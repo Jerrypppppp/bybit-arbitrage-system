@@ -449,6 +449,9 @@ class ArbitrageEngine:
             TradingResult: 平倉結果
         """
         try:
+            # 先更新持倉信息，確保獲取最新數據
+            self.get_positions_summary()
+            
             if symbol not in self.positions:
                 return TradingResult(False, f"未找到 {symbol} 的持倉")
             
@@ -465,8 +468,15 @@ class ArbitrageEngine:
             tips = self.rules_manager.get_trading_tips(symbol)
             spot_precision = tips['spot_rules']['qty_precision']
             
-            # 賣出所有現貨（完全平倉）
-            close_spot_qty = position.spot_qty  # 賣出所有現貨
+            # 根據合約倉位決定現貨賣出數量
+            # 合約有多少倉位就賣多少現貨
+            futures_qty = abs(position.futures_qty)  # 合約倉位數量
+            close_spot_qty = min(position.spot_qty, futures_qty)  # 賣出現貨數量不超過合約倉位
+            
+            print(f"📊 平倉計算:")
+            print(f"   合約倉位: {futures_qty:.6f}")
+            print(f"   現貨持倉: {position.spot_qty:.6f}")
+            print(f"   賣出現貨: {close_spot_qty:.6f}")
             
             # 賣出現貨（使用quoteQty參數，傳入USDT金額）
             spot_value = close_spot_qty * spot_price  # 計算現貨價值
@@ -483,32 +493,42 @@ class ArbitrageEngine:
             
             # 買入合約（平空倉）
             futures_precision = tips['linear_rules']['qty_precision']
-            futures_qty = abs(position.futures_qty)  # 合約數量（絕對值）
+            close_futures_qty = abs(position.futures_qty)  # 平倉合約數量（絕對值）
+            
+            print(f"   平倉合約: {close_futures_qty:.6f}")
+            
             futures_result = self.client.place_order(
                 symbol=symbol,
                 side="Buy",
                 order_type="Market",
-                qty=str(round(futures_qty, futures_precision)),  # 使用正確的精度
+                qty=str(round(close_futures_qty, futures_precision)),  # 使用正確的精度
                 category="linear"
             )
             
             if futures_result.get("retCode") != 0:
                 return TradingResult(False, f"合約買入失敗: {futures_result.get('retMsg')}")
             
-            # 計算盈虧（完全平倉）
+            # 計算盈虧（部分平倉）
             spot_pnl = (spot_price - position.spot_avg_price) * close_spot_qty
             futures_pnl = (position.futures_avg_price - futures_price) * position.futures_qty
             total_pnl = spot_pnl + futures_pnl
             
-            # 完全平倉，移除持倉記錄
-            del self.positions[symbol]
-            position_closed = True
+            # 更新持倉記錄
+            position.spot_qty -= close_spot_qty
+            position.futures_qty = 0  # 合約完全平倉
+            
+            # 如果現貨持倉為0或接近0，移除持倉記錄
+            if position.spot_qty < 0.001:
+                del self.positions[symbol]
+                position_closed = True
+            else:
+                position_closed = False
             
             return TradingResult(
                 success=True,
-                message=f"✅ 平倉成功！總盈虧: {total_pnl:.2f} USDT",
+                message=f"✅ 平倉成功！總盈虧: {total_pnl:.2f} USDT" + ("" if position_closed else f"，剩餘現貨: {position.spot_qty:.6f}"),
                 spot_qty=close_spot_qty,  # 返回實際賣出的現貨數量
-                futures_qty=futures_qty,  # 返回平倉的合約數量
+                futures_qty=close_futures_qty,  # 返回平倉的合約數量
                 spot_price=spot_price,
                 futures_price=futures_price,
                 total_cost=0.0

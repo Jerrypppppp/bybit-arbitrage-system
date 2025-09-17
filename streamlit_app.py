@@ -739,11 +739,16 @@ def close_all_positions():
             total_count = len(st.session_state.engine.positions)
             
             for symbol in list(st.session_state.engine.positions.keys()):
-                if st.session_state.engine.close_position(symbol):
+                result = st.session_state.engine.close_position(symbol)
+                if result.success:
                     success_count += 1
+                    st.success(f"✅ {symbol} 平倉成功: {result.message}")
+                else:
+                    st.error(f"❌ {symbol} 平倉失敗: {result.message}")
             
             if success_count == total_count:
                 st.success(f"✅ 所有持倉平倉成功 ({success_count}/{total_count})")
+                st.balloons()
             else:
                 st.warning(f"⚠️ 部分持倉平倉失敗 ({success_count}/{total_count})")
     except Exception as e:
