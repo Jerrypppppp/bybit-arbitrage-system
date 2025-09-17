@@ -529,10 +529,20 @@ class ArbitrageEngine:
             if futures_result.get("retCode") != 0:
                 return TradingResult(False, f"合約買入失敗: {futures_result.get('retMsg')}")
             
-            # 計算盈虧（部分平倉）
+            # 計算盈虧（對衝套利）
+            # 現貨：買入現貨，賣出現貨 → 盈虧 = (賣出價格 - 買入價格) × 數量
             spot_pnl = (spot_price - position.spot_avg_price) * close_spot_qty
-            futures_pnl = (position.futures_avg_price - futures_price) * position.futures_qty
+            
+            # 合約：做空合約，買入平倉 → 盈虧 = (做空價格 - 平倉價格) × 數量
+            # 注意：futures_qty 是負數（空頭），所以用 abs() 取絕對值
+            futures_pnl = (position.futures_avg_price - futures_price) * abs(position.futures_qty)
+            
             total_pnl = spot_pnl + futures_pnl
+            
+            print(f"📊 盈虧計算詳情:")
+            print(f"   現貨盈虧: ({spot_price:.4f} - {position.spot_avg_price:.4f}) × {close_spot_qty:.6f} = {spot_pnl:.2f} USDT")
+            print(f"   合約盈虧: ({position.futures_avg_price:.4f} - {futures_price:.4f}) × {abs(position.futures_qty):.6f} = {futures_pnl:.2f} USDT")
+            print(f"   總盈虧: {total_pnl:.2f} USDT")
             
             # 更新持倉記錄
             position.spot_qty -= close_spot_qty
