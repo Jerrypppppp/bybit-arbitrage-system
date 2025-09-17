@@ -567,7 +567,11 @@ class ArbitrageEngine:
             
             futures_pnl = futures_gross_pnl - futures_fees
             
-            total_pnl = spot_pnl + futures_pnl
+            # 計算資金費率收益
+            # 資金費率每8小時收取一次，做空合約收取正資金費率
+            funding_income = self.calculate_funding_income(position, close_spot_qty)
+            
+            total_pnl = spot_pnl + futures_pnl + funding_income
             total_fees = spot_fees + futures_fees
             
             print(f"📊 盈虧計算詳情（含手續費）:")
@@ -578,6 +582,7 @@ class ArbitrageEngine:
             print(f"   合約手續費: ({futures_short_amount:.2f} + {futures_buy_amount:.2f}) × {FUTURES_FEE_RATE:.3f} = {futures_fees:.2f} USDT")
             print(f"   合約淨利: {futures_pnl:.2f} USDT")
             print(f"   總手續費: {total_fees:.2f} USDT")
+            print(f"   資金費率收益: {funding_income:.2f} USDT")
             print(f"   總淨利: {total_pnl:.2f} USDT")
             
             # 更新持倉記錄
@@ -738,3 +743,52 @@ class ArbitrageEngine:
             'total_investment': total_investment,
             'positions': self.closed_positions
         }
+    
+    def calculate_funding_income(self, position: Position, close_quantity: float) -> float:
+        """
+        計算資金費率收益
+        
+        Args:
+            position: 持倉記錄
+            close_quantity: 平倉數量
+            
+        Returns:
+            資金費率收益 (USDT)
+        """
+        try:
+            # 獲取當前資金費率
+            symbol = position.symbol
+            funding_rate = self.get_funding_rate(symbol)
+            
+            if not funding_rate:
+                print(f"⚠️ 無法獲取 {symbol} 的資金費率")
+                return 0.0
+            
+            # 計算持倉時間（小時）
+            current_time = time.time()
+            holding_hours = (current_time - position.entry_time) / 3600
+            
+            # 資金費率每8小時收取一次
+            funding_periods = int(holding_hours / 8)
+            
+            if funding_periods <= 0:
+                print(f"📊 資金費率計算: 持倉時間 {holding_hours:.2f} 小時，未達到8小時收取週期")
+                return 0.0
+            
+            # 計算資金費率收益
+            # 做空合約收取正資金費率（當資金費率為正時）
+            futures_value = abs(position.futures_qty) * position.futures_avg_price
+            funding_income = futures_value * funding_rate * funding_periods
+            
+            print(f"📊 資金費率計算:")
+            print(f"   持倉時間: {holding_hours:.2f} 小時")
+            print(f"   收取週期: {funding_periods} 次 (每8小時)")
+            print(f"   合約價值: {futures_value:.2f} USDT")
+            print(f"   資金費率: {funding_rate:.6f} ({funding_rate*100:.4f}%)")
+            print(f"   資金費率收益: {futures_value:.2f} × {funding_rate:.6f} × {funding_periods} = {funding_income:.2f} USDT")
+            
+            return funding_income
+            
+        except Exception as e:
+            print(f"❌ 計算資金費率收益失敗: {e}")
+            return 0.0
