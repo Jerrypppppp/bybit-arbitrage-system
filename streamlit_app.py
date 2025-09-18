@@ -104,12 +104,12 @@ def main():
     
     # Demo API 重要提示
     if st.session_state.client and st.session_state.client.demo:
-        st.warning("""
-        ⚠️ **Demo API 使用提示：**
-        - Demo API 有較高的最小交易數量要求（通常需要 5+ 個幣種）
-        - 建議最小投資金額：**100,000 USDT**
+        st.info("""
+        ℹ️ **Demo API 使用提示：**
+        - 系統會自動計算每個幣種的實際最小投資要求
+        - 投資金額基於API返回的真實交易規則
         - 如果下單失敗，請增加投資金額重試
-        - 系統會自動計算各幣種的實際最小投資要求
+        - 不同幣種的最小投資要求可能不同
         """)
     
     # 側邊欄 - API 配置
@@ -277,132 +277,231 @@ def show_welcome_page():
 
 def show_opportunities_tab(min_funding_rate):
     """顯示套利機會選項卡"""
-    st.header("📊 套利機會掃描")
+    st.header("📊 套利機會分析")
     
-    col1, col2, col3 = st.columns([1, 1, 2])
+    # 選擇交易對
+    st.subheader("🎯 選擇交易對")
     
-    with col1:
-        if st.button("🔄 手動刷新", type="primary"):
-            scan_opportunities(min_funding_rate)
+    # 搜尋功能
+    search_term = st.text_input("🔍 搜尋交易對", placeholder="輸入幣種名稱，如 BTC、ETH...")
     
-    with col2:
-        if st.button("⏹️ 停止掃描"):
-            st.session_state.auto_refresh = False
-            st.success("掃描已停止")
+    # 獲取所有交易對
+    all_symbols = Config.load_all_trading_pairs()
     
-    with col3:
-        if st.session_state.auto_refresh:
-            st.info("🔄 自動掃描中...")
-        else:
-            st.info("⏸️ 掃描已停止")
+    if search_term:
+        # 根據搜尋詞過濾
+        filtered_symbols = [
+            symbol for symbol in all_symbols 
+            if search_term.upper() in symbol.upper()
+        ]
+        if not filtered_symbols:
+            st.warning(f"未找到包含 '{search_term}' 的交易對")
+            filtered_symbols = all_symbols[:20]  # 顯示前20個
+    else:
+        # 顯示常用交易對
+        common_pairs = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'ADAUSDT', 'DOTUSDT', 
+                      'LINKUSDT', 'UNIUSDT', 'LTCUSDT', 'BCHUSDT', 'XRPUSDT',
+                      'AVAXUSDT', 'ATOMUSDT', 'NEARUSDT', 'MATICUSDT', 'FTMUSDT']
+        filtered_symbols = [pair for pair in common_pairs if pair in all_symbols]
+        filtered_symbols.extend([symbol for symbol in all_symbols if symbol not in filtered_symbols][:10])
     
-    # 顯示機會列表
-    if st.session_state.opportunities:
-        st.subheader("🎯 發現的套利機會")
-        
-        # 創建 DataFrame
-        df = pd.DataFrame([
-            {
-                "交易對": opp.symbol,
-                "現貨價格": f"${opp.spot_price:.4f}",
-                "合約價格": f"${opp.futures_price:.4f}",
-                "資金費率": f"{opp.funding_rate:.6f}",
-                "價差%": f"{opp.price_difference_percent:.2f}%",
-                "潛在利潤": f"${opp.potential_profit:.2f}",
-                "風險評分": f"{opp.risk_score:.2f}",
-                "時間": datetime.fromtimestamp(opp.timestamp).strftime("%H:%M:%S")
-            }
-            for opp in st.session_state.opportunities
-        ])
-        
-        # 顯示表格
-        st.dataframe(df, use_container_width=True)
-        
-        # 執行套利按鈕
-        st.subheader("🚀 執行套利")
-        
-        col1, col2, col3, col4 = st.columns([1, 1, 1, 1])
-        
-        with col1:
-            # 搜尋和選擇交易對
-            all_symbols = Config.load_all_trading_pairs()
+    # 顯示搜尋結果數量
+    if search_term:
+        st.caption(f"找到 {len(filtered_symbols)} 個交易對")
+    else:
+        st.caption(f"顯示常用交易對，共 {len(all_symbols)} 個可用")
+    
+    selected_symbol = st.selectbox(
+        "選擇交易對",
+        filtered_symbols,
+        help="選擇要分析套利機會的交易對"
+    )
+    
+    # 顯示選定幣種的實時信息
+    if st.session_state.engine and selected_symbol:
+        try:
+            # 獲取實時數據
+            spot_price = st.session_state.engine.get_spot_price(selected_symbol)
+            futures_price = st.session_state.engine.get_futures_price(selected_symbol)
+            funding_rate = st.session_state.engine.get_funding_rate(selected_symbol)
             
-            # 搜尋框
-            search_term = st.text_input(
-                "🔍 搜尋交易對",
-                placeholder="輸入幣種名稱，如 BTC, ETH, SOL...",
-                help="輸入幣種名稱來搜尋交易對"
-            )
+            if spot_price and futures_price:
+                # 計算價差
+                price_diff = futures_price - spot_price
+                price_diff_percent = (price_diff / spot_price) * 100
+                
+                # 顯示實時信息
+                st.subheader(f"📈 {selected_symbol} 實時數據")
+                
+                col1, col2, col3, col4 = st.columns(4)
+                
+                with col1:
+                    st.metric("現貨價格", f"${spot_price:.4f}")
+                
+                with col2:
+                    st.metric("合約價格", f"${futures_price:.4f}")
+                
+                with col3:
+                    st.metric("價差", f"{price_diff_percent:.4f}%", 
+                             delta=f"${price_diff:.4f}")
+                
+                with col4:
+                    st.metric("資金費率", f"{funding_rate:.4%}")
+                
+                # 套利機會評估
+                st.subheader("🎯 套利機會評估")
+                
+                if funding_rate >= min_funding_rate:
+                    st.success(f"✅ 發現套利機會！資金費率 {funding_rate:.4%} 達到最小要求 {min_funding_rate:.4%}")
+                else:
+                    st.warning(f"⚠️ 資金費率 {funding_rate:.4%} 低於最小要求 {min_funding_rate:.4%}")
+                
+                # 執行套利按鈕
+                st.subheader("🚀 執行套利")
+                
+                col1, col2, col3, col4 = st.columns([1, 1, 1, 1])
+                
+                with col1:
+                    # 動態獲取最小投資金額
+                    min_amount = 50000.0  # Demo API 默認值
+                    if st.session_state.engine and selected_symbol:
+                        try:
+                            tips = st.session_state.engine.rules_manager.get_trading_tips(selected_symbol)
+                            min_amount = tips['min_investment']
+                        except:
+                            pass
+                    
+                    amount = st.number_input(
+                        "總投資金額 (USDT)",
+                        min_value=min_amount,
+                        max_value=1000000.0,
+                        value=max(min_amount, 100000.0),
+                        step=1000.0,
+                        help=f"Demo API 最小投資金額: {min_amount:,.0f} USDT"
+                    )
+                
+                with col2:
+                    # 動態獲取最大槓桿
+                    max_leverage = 5  # 默認值
+                    if st.session_state.engine and selected_symbol:
+                        try:
+                            tips = st.session_state.engine.rules_manager.get_trading_tips(selected_symbol)
+                            max_leverage = int(tips['linear_rules']['max_leverage'])
+                        except:
+                            pass
+                    
+                    leverage_options = list(range(1, max_leverage + 1))
+                    leverage = st.selectbox(
+                        "槓桿倍數",
+                        leverage_options,
+                        index=min(1, len(leverage_options) - 1),  # 默認選擇 2 倍槓桿或最大可用
+                        help=f"選擇槓桿倍數 (1-{max_leverage}x)"
+                    )
+                
+                with col3:
+                    st.write("")  # 空行
+                    st.write("")  # 空行
+                    
+                    # 檢查投資金額是否足夠
+                    amount_warning = ""
+                    if st.session_state.engine and selected_symbol:
+                        try:
+                            tips = st.session_state.engine.rules_manager.get_trading_tips(selected_symbol)
+                            if amount < tips['min_investment']:
+                                amount_warning = f"⚠️ 投資金額過小，建議至少 {tips['min_investment']:,.0f} USDT"
+                        except:
+                            pass
+                    
+                    if amount_warning:
+                        st.warning(amount_warning)
+                
+                with col4:
+                    st.write("")  # 空行
+                    st.write("")  # 空行
+                    
+                    if st.button("🚀 一鍵套利", type="primary"):
+                        with st.spinner("正在執行一鍵套利..."):
+                            result = execute_one_click_arbitrage(selected_symbol, amount, leverage)
+                            
+                            # 顯示執行結果
+                            if result:
+                                if result.get('success', False):
+                                    st.success(f"✅ {result.get('message', '套利交易執行成功！')}")
+                                    st.balloons()
+                                    
+                                    # 顯示詳細交易信息
+                                    if 'details' in result:
+                                        details = result['details']
+                                        col1, col2, col3 = st.columns(3)
+                                        with col1:
+                                            st.metric("現貨買入", f"{details.get('spot_qty', 0):.6f}")
+                                        with col2:
+                                            st.metric("合約賣出", f"{details.get('futures_qty', 0):.6f}")
+                                        with col3:
+                                            st.metric("總成本", f"{details.get('total_cost', 0):.2f} USDT")
+                                else:
+                                    st.error(f"❌ {result.get('message', '套利交易執行失敗！')}")
+                            else:
+                                st.error("❌ 套利交易執行失敗，請檢查網絡連接和API配置")
+                
+                # 即時計算和顯示
+                if amount > 0 and leverage > 0:
+                    try:
+                        # 計算資金分配
+                        spot_amount, futures_amount = st.session_state.engine.calculate_capital_allocation(amount, leverage)
+                        
+                        if spot_price and futures_price:
+                            # 計算交易數量
+                            spot_qty = spot_amount / spot_price
+                            futures_qty = spot_qty  # 對衝套利，數量相同
+                            
+                            # 獲取交易規則並調整數量
+                            tips = st.session_state.engine.rules_manager.get_trading_tips(selected_symbol)
+                            spot_step = tips['spot_rules']['qty_step']
+                            futures_step = tips['linear_rules']['qty_step']
+                            spot_precision = tips['spot_rules']['qty_precision']
+                            futures_precision = tips['linear_rules']['qty_precision']
+                            
+                            # 調整數量
+                            if spot_step > 0:
+                                spot_qty = round(spot_qty / spot_step) * spot_step
+                            if futures_step > 0:
+                                futures_qty = round(futures_qty / futures_step) * futures_step
+                            
+                            spot_qty = round(spot_qty, spot_precision)
+                            futures_qty = round(futures_qty, futures_precision)
+                            
+                            # 顯示即時計算結果
+                            st.subheader("📊 即時計算結果")
+                            
+                            col1, col2, col3, col4 = st.columns(4)
+                            
+                            with col1:
+                                st.metric("現貨投資", f"{spot_amount:.2f} USDT")
+                                st.metric("現貨數量", f"{spot_qty:.6f}")
+                            
+                            with col2:
+                                st.metric("合約保證金", f"{futures_amount:.2f} USDT")
+                                st.metric("合約數量", f"{futures_qty:.6f}")
+                            
+                            with col3:
+                                st.metric("現貨價格", f"${spot_price:.4f}")
+                                st.metric("合約價格", f"${futures_price:.4f}")
+                            
+                            with col4:
+                                st.metric("資金費率", f"{funding_rate:.4%}")
+                                st.metric("槓桿倍數", f"{leverage}x")
+                            
+                            # 顯示對衝效果
+                            st.info(f"🎯 對衝套利: 現貨 {spot_amount:.2f} USDT | 合約保證金 {futures_amount:.2f} USDT | 實際總投資: {spot_amount + futures_amount:.2f} USDT")
+                            
+                    except Exception as e:
+                        st.warning(f"⚠️ 計算失敗: {str(e)}")
             
-            # 根據搜尋條件過濾交易對
-            if search_term:
-                filtered_symbols = [symbol for symbol in all_symbols 
-                                  if search_term.upper() in symbol.upper()]
-                if not filtered_symbols:
-                    st.warning(f"未找到包含 '{search_term}' 的交易對")
-                    filtered_symbols = all_symbols[:20]  # 顯示前20個
-            else:
-                # 顯示常用交易對
-                common_pairs = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'ADAUSDT', 'DOTUSDT', 
-                              'LINKUSDT', 'UNIUSDT', 'LTCUSDT', 'BCHUSDT', 'XRPUSDT',
-                              'AVAXUSDT', 'ATOMUSDT', 'NEARUSDT', 'MATICUSDT', 'FTMUSDT']
-                filtered_symbols = [pair for pair in common_pairs if pair in all_symbols]
-                filtered_symbols.extend([symbol for symbol in all_symbols if symbol not in filtered_symbols][:10])
-            
-            # 顯示搜尋結果數量
-            if search_term:
-                st.caption(f"找到 {len(filtered_symbols)} 個交易對")
-            else:
-                st.caption(f"顯示常用交易對，共 {len(all_symbols)} 個可用")
-            
-            selected_symbol = st.selectbox(
-                "選擇交易對",
-                filtered_symbols,
-                help="選擇要執行套利的交易對"
-            )
-        
-        with col2:
-            # 動態獲取最小投資金額
-            min_amount = 50000.0  # Demo API 默認值
-            if st.session_state.engine and selected_symbol:
-                try:
-                    tips = st.session_state.engine.rules_manager.get_trading_tips(selected_symbol)
-                    min_amount = tips['min_investment']
-                except:
-                    pass
-            
-            amount = st.number_input(
-                "總投資金額 (USDT)",
-                min_value=min_amount,
-                max_value=1000000.0,
-                value=max(min_amount, 100000.0),
-                step=1000.0,
-                help=f"Demo API 最小投資金額: {min_amount:,.0f} USDT"
-            )
-        
-        with col3:
-            # 動態獲取最大槓桿
-            max_leverage = 5  # 默認值
-            if st.session_state.engine and selected_symbol:
-                try:
-                    tips = st.session_state.engine.rules_manager.get_trading_tips(selected_symbol)
-                    max_leverage = int(tips['linear_rules']['max_leverage'])
-                except:
-                    pass
-            
-            leverage_options = list(range(1, max_leverage + 1))
-            leverage = st.selectbox(
-                "槓桿倍數",
-                leverage_options,
-                index=min(1, len(leverage_options) - 1),  # 默認選擇 2 倍槓桿或最大可用
-                help=f"選擇槓桿倍數 (1-{max_leverage}x)"
-            )
-        
-        with col4:
-            st.write("")  # 空行
-            st.write("")  # 空行
-            if st.button("🚀 一鍵套利", type="primary"):
-                execute_one_click_arbitrage(selected_symbol, amount, leverage)
+        except Exception as e:
+            st.error(f"❌ 獲取數據失敗: {str(e)}")
+    else:
+        st.info("請先連接 API 以查看套利機會")
         
         # 顯示交易提示
         if st.session_state.engine and selected_symbol:
@@ -430,13 +529,12 @@ def show_opportunities_tab(min_funding_rate):
                 
                 # Demo API 特殊提示
                 if st.session_state.client and st.session_state.client.demo:
-                    st.warning(f"""
-                    ⚠️ **Demo API 重要提示：**
-                    - Demo API 有較高的最小交易數量要求
-                    - 建議投資金額：**{tips['min_investment']:,.0f} USDT 以上**
-                    - 實際測試顯示需要較大金額才能成功下單
+                    st.info(f"""
+                    ℹ️ **Demo API 投資要求：**
+                    - 基於API真實數據計算的最小投資金額：**{tips['min_investment']:,.0f} USDT**
+                    - 此金額已包含安全邊際，應該能夠成功下單
                     - 如果下單失敗，請增加投資金額重試
-                    - 建議從 100,000 USDT 開始測試
+                    - 不同幣種的投資要求可能不同
                     """)
                 
                 # 顯示建議
@@ -455,7 +553,7 @@ def show_opportunities_tab(min_funding_rate):
         # 顯示資金分配預覽
         if amount and leverage:
             spot_amount, futures_amount = st.session_state.engine.calculate_capital_allocation(amount, leverage)
-            st.info(f"📊 對衝套利資金分配: 現貨 {spot_amount:.2f} USDT | 合約保證金 {futures_amount:.2f} USDT (現貨和合約買入相同數量，合約使用{leverage}x槓桿)")
+            st.info(f"📊 對衝套利資金分配: 現貨 {spot_amount:.2f} USDT | 合約保證金 {futures_amount:.2f} USDT (現貨和合約買入相同數量，合約使用{leverage}x槓桿，實際總投資: {spot_amount + futures_amount:.2f} USDT)")
         
         # 顯示選中交易對的實時信息
         if selected_symbol:
@@ -498,149 +596,6 @@ def show_opportunities_tab(min_funding_rate):
                         
             except Exception as e:
                 st.error(f"獲取 {selected_symbol} 信息時發生錯誤: {str(e)}")
-    else:
-        st.info("🔍 暫無套利機會，請點擊「手動刷新」開始掃描")
-        
-        # 即使沒有套利機會，也提供選擇幣種交易的功能
-        st.subheader("🚀 手動選擇交易對")
-        
-        col1, col2, col3, col4 = st.columns([1, 1, 1, 1])
-        
-        with col1:
-            # 搜尋和選擇交易對
-            all_symbols = Config.load_all_trading_pairs()
-            
-            # 搜尋框
-            search_term = st.text_input(
-                "🔍 搜尋交易對",
-                placeholder="輸入幣種名稱，如 BTC, ETH, SOL...",
-                help="輸入幣種名稱來搜尋交易對",
-                key="manual_search"
-            )
-            
-            # 根據搜尋條件過濾交易對
-            if search_term:
-                filtered_symbols = [symbol for symbol in all_symbols 
-                                  if search_term.upper() in symbol.upper()]
-                if not filtered_symbols:
-                    st.warning(f"未找到包含 '{search_term}' 的交易對")
-                    filtered_symbols = all_symbols[:20]  # 顯示前20個
-            else:
-                # 顯示常用交易對
-                common_pairs = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'ADAUSDT', 'DOTUSDT', 
-                              'LINKUSDT', 'UNIUSDT', 'LTCUSDT', 'BCHUSDT', 'XRPUSDT',
-                              'AVAXUSDT', 'ATOMUSDT', 'NEARUSDT', 'MATICUSDT', 'FTMUSDT']
-                filtered_symbols = [pair for pair in common_pairs if pair in all_symbols]
-                filtered_symbols.extend([symbol for symbol in all_symbols if symbol not in filtered_symbols][:10])
-            
-            # 顯示搜尋結果數量
-            if search_term:
-                st.caption(f"找到 {len(filtered_symbols)} 個交易對")
-            else:
-                st.caption(f"顯示常用交易對，共 {len(all_symbols)} 個可用")
-            
-            selected_symbol = st.selectbox(
-                "選擇交易對",
-                filtered_symbols,
-                help="選擇要執行套利的交易對",
-                key="manual_symbol"
-            )
-        
-        with col2:
-            amount = st.number_input(
-                "總投資金額 (USDT)",
-                min_value=50.0,
-                max_value=10000.0,
-                value=100.0,
-                step=10.0,
-                help="API 最小投資金額: 50 USDT (約 0.01 ETH)",
-                key="manual_amount"
-            )
-        
-        with col3:
-            leverage = st.selectbox(
-                "槓桿倍數",
-                [1, 2, 3, 4, 5],
-                index=1,  # 默認選擇 2 倍槓桿
-                help="選擇槓桿倍數 (1-5x)",
-                key="manual_leverage"
-            )
-        
-        with col4:
-            st.write("")  # 空行
-            st.write("")  # 空行
-            if st.button("🚀 一鍵套利", type="primary", key="manual_execute"):
-                execute_one_click_arbitrage(selected_symbol, amount, leverage)
-        
-        # 顯示資金分配預覽
-        if amount and leverage:
-            spot_amount, futures_amount = st.session_state.engine.calculate_capital_allocation(amount, leverage)
-            st.info(f"📊 對衝套利資金分配: 現貨 {spot_amount:.2f} USDT | 合約保證金 {futures_amount:.2f} USDT (現貨和合約買入相同數量，合約使用{leverage}x槓桿)")
-        
-        # 顯示選中交易對的實時信息
-        if selected_symbol:
-            st.subheader(f"📊 {selected_symbol} 實時信息")
-            
-            col1, col2, col3, col4 = st.columns(4)
-            
-            try:
-                # 獲取現貨價格
-                spot_price = st.session_state.engine.get_spot_price(selected_symbol)
-                with col1:
-                    if spot_price:
-                        st.metric("現貨價格", f"${spot_price:.4f}")
-                    else:
-                        st.metric("現貨價格", "N/A")
-                
-                # 獲取合約價格
-                futures_price = st.session_state.engine.get_futures_price(selected_symbol)
-                with col2:
-                    if futures_price:
-                        st.metric("合約價格", f"${futures_price:.4f}")
-                    else:
-                        st.metric("合約價格", "N/A")
-                
-                # 獲取資金費率
-                funding_rate = st.session_state.engine.get_funding_rate(selected_symbol)
-                with col3:
-                    if funding_rate is not None:
-                        st.metric("資金費率", f"{funding_rate:.6f}")
-                    else:
-                        st.metric("資金費率", "N/A")
-                
-                # 計算價差
-                with col4:
-                    if spot_price and futures_price:
-                        price_diff = ((futures_price - spot_price) / spot_price) * 100
-                        st.metric("價差%", f"{price_diff:.2f}%")
-                    else:
-                        st.metric("價差%", "N/A")
-                        
-            except Exception as e:
-                st.error(f"獲取 {selected_symbol} 信息時發生錯誤: {str(e)}")
-
-def scan_opportunities(min_funding_rate):
-    """掃描套利機會"""
-    if not st.session_state.engine:
-        st.error("請先連接 API")
-        return
-    
-    with st.spinner("正在掃描套利機會..."):
-        opportunities = st.session_state.engine.scan_opportunities(Config.load_all_trading_pairs())
-        
-        # 過濾最小資金費率
-        filtered_opportunities = [
-            opp for opp in opportunities 
-            if opp.funding_rate > min_funding_rate
-        ]
-        
-        st.session_state.opportunities = filtered_opportunities
-        
-        if filtered_opportunities:
-            st.success(f"✅ 發現 {len(filtered_opportunities)} 個套利機會")
-        else:
-            st.warning("⚠️ 未發現符合條件的套利機會")
-
 def execute_arbitrage(symbol, amount):
     """執行套利交易（舊版本，保留兼容性）"""
     if not st.session_state.engine:
@@ -662,39 +617,33 @@ def execute_arbitrage(symbol, amount):
 def execute_one_click_arbitrage(symbol: str, total_amount: float, leverage: int):
     """執行一鍵套利交易"""
     if not st.session_state.engine:
-        st.error("請先連接 API")
-        return
+        return {'success': False, 'message': '請先連接 API'}
     
     try:
-        with st.spinner(f"正在執行 {symbol} 一鍵套利交易..."):
-            # 調用一鍵套利方法
-            result = st.session_state.engine.one_click_arbitrage(symbol, total_amount, leverage)
+        # 調用一鍵套利方法
+        result = st.session_state.engine.one_click_arbitrage(symbol, total_amount, leverage)
+        
+        if result.success:
+            # 顯示資金分配
+            spot_amount, futures_amount = st.session_state.engine.calculate_capital_allocation(total_amount, leverage)
             
-            if result.success:
-                st.success(result.message)
-                st.balloons()
-                
-                # 顯示詳細交易信息
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.metric("現貨買入", f"{result.spot_qty:.6f}")
-                with col2:
-                    st.metric("合約賣出", f"{result.futures_qty:.6f}")
-                with col3:
-                    st.metric("總成本", f"{result.total_cost:.2f} USDT")
-                
-                # 顯示資金分配
-                spot_amount, futures_amount = st.session_state.engine.calculate_capital_allocation(total_amount, leverage)
-                st.info(f"📊 對衝套利資金分配: 現貨 {spot_amount:.2f} USDT | 合約保證金 {futures_amount:.2f} USDT (現貨和合約買入相同數量，合約使用{leverage}x槓桿)")
-                
-            else:
-                st.error(f"❌ {result.message}")
-            
-            # 刷新持倉信息
-            st.rerun()
+            return {
+                'success': True,
+                'message': result.message,
+                'details': {
+                    'spot_qty': result.spot_qty,
+                    'futures_qty': result.futures_qty,
+                    'total_cost': result.total_cost,
+                    'spot_amount': spot_amount,
+                    'futures_amount': futures_amount,
+                    'leverage': leverage
+                }
+            }
+        else:
+            return {'success': False, 'message': result.message}
             
     except Exception as e:
-        st.error(f"❌ 一鍵套利失敗: {str(e)}")
+        return {'success': False, 'message': f'一鍵套利失敗: {str(e)}'}
 
 def show_positions_tab():
     """顯示持倉管理選項卡"""
@@ -1062,14 +1011,6 @@ def show_trading_pairs_tab():
     st.write("- 📈 價格走勢圖表")
     st.write("- 📋 交易記錄查詢")
 
-# 自動刷新邏輯
-if st.session_state.auto_refresh and st.session_state.is_connected:
-    if st.session_state.engine:
-        scan_opportunities(0.0001)
-    
-    # 使用 time.sleep 來控制刷新間隔
-    time.sleep(30)  # 30秒刷新一次
-    st.rerun()
 
 if __name__ == "__main__":
     main()

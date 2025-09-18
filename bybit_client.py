@@ -108,10 +108,8 @@ class BybitClient:
         if price:
             params["price"] = price
         
-        # 對於現貨市價單，同時提供qty和quoteQty
-        if category == "spot" and order_type == "Market":
-            # 保持qty參數，同時添加quoteQty
-            params["quoteQty"] = qty  # 對於現貨市價單，qty實際上是USDT金額
+        # 對於現貨市價單，使用qty參數（數量）
+        # 不再添加quoteQty，因為現在傳入的是數量而不是金額
             
         return self._make_request("POST", "/v5/order/create", params, signed=True)
     

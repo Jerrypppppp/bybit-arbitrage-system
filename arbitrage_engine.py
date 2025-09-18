@@ -194,7 +194,7 @@ class ArbitrageEngine:
         
         for symbol in symbols:
             opportunity = self.calculate_arbitrage_opportunity(symbol)
-            if opportunity and opportunity.funding_rate > Config.MIN_FUNDING_RATE:
+            if opportunity and opportunity.funding_rate >= Config.MIN_FUNDING_RATE:
                 opportunities.append(opportunity)
         
         # 按潛在利潤排序
@@ -283,15 +283,24 @@ class ArbitrageEngine:
             (spot_amount, futures_amount): 現貨投資金額, 合約保證金
         """
         # 對衝套利邏輯：
-        # 1. 現貨：用一半資金買入現貨
-        # 2. 合約：用另一半資金作為保證金，通過槓桿做空相同數量的幣
+        # 1. 現貨：用 (leverage/(leverage+1)) 的資金買入現貨
+        # 2. 合約：用 (1/(leverage+1)) 的資金作為保證金，通過槓桿做空相同數量的幣
+        # 這樣現貨價值 = 合約名義價值，實現完美對衝
         
-        # 現貨投資：直接買入現貨
-        spot_amount = total_amount / 2
+        # 現貨投資：用大部分資金買入現貨
+        spot_ratio = leverage / (leverage + 1)
+        spot_amount = total_amount * spot_ratio
         
-        # 合約保證金：用於做空相同價值的合約
-        # 由於合約有槓桿，保證金 = 現貨價值 / 槓桿
-        futures_amount = spot_amount / leverage
+        # 合約保證金：用少部分資金作為保證金
+        futures_ratio = 1 / (leverage + 1)
+        futures_amount = total_amount * futures_ratio
+        
+        print(f"📊 資金分配計算 (槓桿 {leverage}x):")
+        print(f"   總投資: {total_amount:.2f} USDT")
+        print(f"   現貨投資: {spot_amount:.2f} USDT ({spot_ratio:.2%})")
+        print(f"   合約保證金: {futures_amount:.2f} USDT ({futures_ratio:.2%})")
+        print(f"   合約名義價值: {futures_amount * leverage:.2f} USDT")
+        print(f"   實際總投資: {spot_amount + futures_amount:.2f} USDT")
         
         return spot_amount, futures_amount
 
@@ -334,22 +343,33 @@ class ArbitrageEngine:
             # 計算交易數量並調整精度
             # 對衝套利：現貨和合約應該買入相同數量的幣
             # 現貨：用spot_amount買入現貨
-            # 合約：用futures_amount做空合約
+            # 合約：用futures_amount做空合約，但數量要與現貨相同
             spot_qty = spot_amount / spot_price  # 現貨數量 = 現貨投資金額 / 現貨價格
-            futures_qty = futures_amount / futures_price  # 合約數量 = 合約保證金 / 合約價格
+            futures_qty = spot_qty  # 合約數量 = 現貨數量（對衝套利）
+            
+            print(f"📊 初始數量計算:")
+            print(f"   現貨數量: {spot_qty:.6f}")
+            print(f"   合約數量: {futures_qty:.6f}")
             
             # 調整數量以符合步長要求
             spot_step = tips['spot_rules']['qty_step']
             futures_step = tips['linear_rules']['qty_step']
             
-            # 將數量調整為步長的倍數
-            spot_qty = round(spot_qty / spot_step) * spot_step
-            futures_qty = round(futures_qty / futures_step) * futures_step
-            
             # 使用交易規則的精度設置
             spot_precision = tips['spot_rules']['qty_precision']
             futures_precision = tips['linear_rules']['qty_precision']
             
+            # 先調整為步長的倍數，然後調整精度
+            if spot_step > 0:
+                spot_qty = round(spot_qty / spot_step) * spot_step
+            if futures_step > 0:
+                futures_qty = round(futures_qty / futures_step) * futures_step
+            
+            print(f"📊 數量調整:")
+            print(f"   現貨步長: {spot_step}, 調整後: {spot_qty:.6f}")
+            print(f"   合約步長: {futures_step}, 調整後: {futures_qty:.6f}")
+            
+            # 最後調整精度
             spot_qty = round(spot_qty, spot_precision)
             futures_qty = round(futures_qty, futures_precision)
             
@@ -381,12 +401,12 @@ class ArbitrageEngine:
             print(f"   對衝效果: 現貨 {spot_qty:.6f} 個 vs 合約 {futures_qty:.6f} 個 (數量相等，完全對衝)")
             print(f"   槓桿效果: 合約保證金 {futures_amount:.2f} USDT 通過 {leverage}x 槓桿控制 {futures_qty * futures_price:.2f} USDT 價值的合約")
             
-            # 執行現貨買入訂單（使用市價單，傳入USDT金額）
+            # 執行現貨買入訂單（使用市價單，傳入數量）
             spot_result = self.client.place_order(
                 symbol=symbol,
                 side="Buy",
                 order_type="Market",
-                qty=str(spot_amount),  # 傳入USDT金額，不是數量
+                qty=str(spot_qty),  # 傳入數量
                 category="spot"
             )
             

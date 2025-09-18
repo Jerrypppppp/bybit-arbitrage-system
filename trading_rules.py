@@ -127,24 +127,37 @@ class TradingRulesManager:
         }
     
     def _get_demo_min_qty(self, symbol: str) -> float:
-        """獲取 Demo API 的實際最小交易數量"""
-        # 基於實際測試結果的 Demo API 限制
-        demo_limits = {
-            'BTCUSDT': 5.0,   # 實際測試：需要 5 BTC 以上
-            'ETHUSDT': 5.0,   # 實際測試：5 ETH 成功
-            'SOLUSDT': 5.0,   # 實際測試：5 SOL 成功
-            'ADAUSDT': 10.0,  # 實際測試：10 ADA 成功
-            'DOTUSDT': 5.0,   # 估算
-            'LINKUSDT': 5.0,  # 估算
-            'UNIUSDT': 5.0,   # 估算
-            'LTCUSDT': 5.0,   # 估算
-            'BCHUSDT': 5.0,   # 估算
-            'XRPUSDT': 10.0,  # 估算
-            'AVAXUSDT': 5.0,  # 估算
-            'ATOMUSDT': 5.0,  # 估算
-            'NEARUSDT': 10.0, # 估算
-        }
-        return demo_limits.get(symbol, 5.0)  # 默認 5.0
+        """動態獲取 Demo API 的實際最小交易數量"""
+        try:
+            # 獲取現貨交易規則
+            spot_response = self.client.get_instruments_info("spot", symbol)
+            if spot_response.get("retCode") == 0 and spot_response.get("result", {}).get("list"):
+                spot_data = spot_response["result"]["list"][0]
+                lot_filter = spot_data.get("lotSizeFilter", {})
+                min_qty = float(lot_filter.get("minOrderQty", "0"))
+                
+                if min_qty > 0:
+                    print(f"📊 {symbol} 現貨最小數量: {min_qty}")
+                    return min_qty
+            
+            # 獲取合約交易規則
+            linear_response = self.client.get_instruments_info("linear", symbol)
+            if linear_response.get("retCode") == 0 and linear_response.get("result", {}).get("list"):
+                linear_data = linear_response["result"]["list"][0]
+                lot_filter = linear_data.get("lotSizeFilter", {})
+                min_qty = float(lot_filter.get("minOrderQty", "0"))
+                
+                if min_qty > 0:
+                    print(f"📊 {symbol} 合約最小數量: {min_qty}")
+                    return min_qty
+            
+            # 如果API獲取失敗，使用保守的默認值
+            print(f"⚠️ 無法獲取 {symbol} 的最小數量，使用默認值")
+            return 0.1  # 保守的默認值
+            
+        except Exception as e:
+            print(f"❌ 獲取 {symbol} 最小數量失敗: {e}")
+            return 0.1  # 保守的默認值
     
     def _is_cache_valid(self) -> bool:
         """檢查緩存是否有效"""
@@ -163,19 +176,27 @@ class TradingRulesManager:
         """
         rules = self.get_trading_rules(symbol)
         
-        # 如果是 Demo API，使用實際的最小交易數量
+        # 如果是 Demo API，使用實際的API數據計算
         if self.client.demo:
-            demo_min_qty = self._get_demo_min_qty(symbol)
-            # 估算價格（使用當前價格或默認價格）
-            estimated_price = 4500 if 'ETH' in symbol else 50000 if 'BTC' in symbol else 100
-            demo_min_amount = demo_min_qty * estimated_price
+            # 獲取現貨和合約的最小交易金額
+            spot_min_amt = rules['spot']['min_order_amt']
+            linear_min_amt = rules['linear']['min_order_amt']
+            
+            # 使用較大的最小金額作為基礎
+            base_min_amount = max(spot_min_amt, linear_min_amt)
             
             # 現貨投資比例
             spot_ratio = leverage / (leverage + 1)
-            min_amount = demo_min_amount / spot_ratio * 1.5  # 增加安全邊際到1.5倍
             
-            # Demo API 最小投資金額至少 100,000 USDT
-            min_amount = max(min_amount, 100000.0)
+            # 計算最小投資金額（現貨部分需要滿足最小金額要求）
+            min_amount = base_min_amount / spot_ratio * 1.2  # 1.2倍安全邊際
+            
+            print(f"📊 {symbol} Demo API 最小投資計算:")
+            print(f"   現貨最小金額: {spot_min_amt} USDT")
+            print(f"   合約最小金額: {linear_min_amt} USDT")
+            print(f"   槓桿倍數: {leverage}x")
+            print(f"   現貨比例: {spot_ratio:.2f}")
+            print(f"   計算結果: {min_amount:.2f} USDT")
             
             return round(min_amount, 2)
         
