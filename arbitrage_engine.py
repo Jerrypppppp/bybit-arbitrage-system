@@ -83,15 +83,9 @@ class ArbitrageEngine:
     def get_funding_rate(self, symbol: str) -> Optional[float]:
         """獲取指定交易對的當前實時資金費率"""
         try:
-            # 將 USDT 交易對轉換為 PERP 格式用於資金費率查詢
-            # 例如：BTCUSDT -> BTCPERP, ETHUSDT -> ETHPERP
-            if symbol.endswith('USDT'):
-                perp_symbol = symbol.replace('USDT', 'PERP')
-            else:
-                perp_symbol = symbol
-            
-            # 使用 Tickers API 獲取實時資金費率
-            response = self.client.get_tickers("linear", perp_symbol)
+            # 直接使用原始符號查詢，不進行轉換
+            # 因為SOLUSDT本身就是正確的合約符號
+            response = self.client.get_tickers("linear", symbol)
             if response.get("retCode") == 0 and response.get("result", {}).get("list"):
                 ticker_data = response["result"]["list"][0]
                 if "fundingRate" in ticker_data:
@@ -109,7 +103,7 @@ class ArbitrageEngine:
                     
                     return funding_rate
         except Exception as e:
-            print(f"獲取實時資金費率失敗 {symbol} (PERP: {perp_symbol}): {e}")
+            print(f"獲取實時資金費率失敗 {symbol}: {e}")
         return None
     
     def get_spot_price(self, symbol: str) -> Optional[float]:
