@@ -102,6 +102,16 @@ def main():
     # 標題
     st.markdown('<h1 class="main-header">💰 Bybit 資金費率套利系統</h1>', unsafe_allow_html=True)
     
+    # Demo API 重要提示
+    if st.session_state.client and st.session_state.client.demo:
+        st.warning("""
+        ⚠️ **Demo API 使用提示：**
+        - Demo API 有較高的最小交易數量要求（通常需要 5+ 個幣種）
+        - 建議最小投資金額：**100,000 USDT**
+        - 如果下單失敗，請增加投資金額重試
+        - 系統會自動計算各幣種的實際最小投資要求
+        """)
+    
     # 側邊欄 - API 配置
     with st.sidebar:
         st.header("🔧 API 配置")
@@ -417,6 +427,17 @@ def show_opportunities_tab(min_funding_rate):
                         st.write(f"最大槓桿: {tips['linear_rules']['max_leverage']}x")
                         st.write(f"數量精度: {tips['linear_rules']['qty_precision']} 位小數")
                         st.write(f"價格精度: {tips['linear_rules']['price_precision']} 位小數")
+                
+                # Demo API 特殊提示
+                if st.session_state.client and st.session_state.client.demo:
+                    st.warning(f"""
+                    ⚠️ **Demo API 重要提示：**
+                    - Demo API 有較高的最小交易數量要求
+                    - 建議投資金額：**{tips['min_investment']:,.0f} USDT 以上**
+                    - 實際測試顯示需要較大金額才能成功下單
+                    - 如果下單失敗，請增加投資金額重試
+                    - 建議從 100,000 USDT 開始測試
+                    """)
                 
                 # 顯示建議
                 if tips['recommendations']:

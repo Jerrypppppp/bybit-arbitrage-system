@@ -172,7 +172,10 @@ class TradingRulesManager:
             
             # 現貨投資比例
             spot_ratio = leverage / (leverage + 1)
-            min_amount = demo_min_amount / spot_ratio * 1.2  # 加上安全邊際
+            min_amount = demo_min_amount / spot_ratio * 1.5  # 增加安全邊際到1.5倍
+            
+            # Demo API 最小投資金額至少 100,000 USDT
+            min_amount = max(min_amount, 100000.0)
             
             return round(min_amount, 2)
         
