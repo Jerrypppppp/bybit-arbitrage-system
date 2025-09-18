@@ -21,6 +21,21 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# 添加自定義 CSS 來抑制 ResizeObserver 警告
+st.markdown("""
+<style>
+    /* 抑制 ResizeObserver 警告 */
+    .stApp > div {
+        overflow: hidden;
+    }
+    
+    /* 優化圖表渲染 */
+    .js-plotly-plot {
+        overflow: hidden;
+    }
+</style>
+""", unsafe_allow_html=True)
+
 # 自定義 CSS
 st.markdown("""
 <style>
@@ -47,6 +62,21 @@ st.markdown("""
     .warning-message {
         color: #ffc107;
         font-weight: bold;
+    }
+    
+    /* 優化 ResizeObserver 性能 */
+    .stApp > div > div > div > div {
+        contain: layout style;
+    }
+    
+    /* 減少不必要的重渲染 */
+    .stDataFrame {
+        contain: layout;
+    }
+    
+    /* 優化圖表性能 */
+    .plotly-graph-div {
+        contain: layout style;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -703,8 +733,37 @@ def show_positions_tab():
             if st.button("🗑️ 平倉所有持倉", type="secondary"):
                 close_all_positions()
         
-        # 顯示歷史記錄
-        show_closed_positions()
+    # 顯示歷史記錄
+    show_closed_positions()
+
+# 添加 JavaScript 來抑制 ResizeObserver 警告
+st.markdown("""
+<script>
+    // 抑制 ResizeObserver 警告
+    const originalError = console.error;
+    console.error = function(...args) {
+        if (args[0] && args[0].includes && args[0].includes('ResizeObserver loop completed with undelivered notifications')) {
+            return; // 忽略 ResizeObserver 警告
+        }
+        originalError.apply(console, args);
+    };
+    
+    // 優化 ResizeObserver 性能
+    if (window.ResizeObserver) {
+        const originalResizeObserver = window.ResizeObserver;
+        window.ResizeObserver = class extends originalResizeObserver {
+            constructor(callback) {
+                super((entries, observer) => {
+                    // 使用 requestAnimationFrame 來延遲回調
+                    requestAnimationFrame(() => {
+                        callback(entries, observer);
+                    });
+                });
+            }
+        };
+    }
+</script>
+""", unsafe_allow_html=True)
 
 def close_position(symbol):
     """平倉單個持倉"""
