@@ -61,6 +61,10 @@ secrets.py
 # Test files
 test_*.py
 *_test.py
+debug_*.py
+check_*.py
+*_analysis.py
+*_analysis.md
 
 # Streamlit
 .streamlit/
